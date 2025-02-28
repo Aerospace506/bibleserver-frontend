@@ -1,10 +1,32 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { MicrophoneIcon, StopIcon } from '@heroicons/react/24/solid';
 
+const SUPPORTED_LANGUAGES = [
+  { value: 'en', label: 'English' },
+  { value: 'es', label: 'Spanish' },
+  { value: 'pt', label: 'Portuguese' },
+  { value: 'ro', label: 'Romanian' },
+  { value: 'la', label: 'Latin' },
+  { value: 'sr', label: 'Serbian' },
+  { value: 'de', label:  'German'}
+];
+
+const SUPPORTED_TRANSLATIONS = [
+    { value: 'kjv', label: 'King James Version' },
+    { value: 'bbe', label: 'Basic English Bible' },
+    { value: 'web', label: 'World English Bible' },
+    { value: 'almeida', label: 'Portuguese Almeida' },
+    { value: 'asv', label: 'American Standard' },
+    { value: 'darby', label: 'Darby Bible' },
+    { value: 'ylt', label: "Young's Literal" }
+  ];
+
 const AudioRecorder = () => {
     const [isRecording, setIsRecording] = useState(false);
     const [verses, setVerses] = useState([]);
     const [loading, setLoading] = useState(false);
+    const [translation, setTranslation] = useState('kjv');
+    const [language, setLanguage] = useState('en');
     const websocket = useRef(null);
     const audioContext = useRef(null);
     const processor = useRef(null);
@@ -28,20 +50,25 @@ const AudioRecorder = () => {
     const startRecording = async () => {
         setLoading(true);
         try {
-            
+
             websocket.current = new WebSocket(import.meta.env.VITE_WS_URL);
-            setVerses([]); // Reset verses on new recording
             
+            websocket.current.onopen = () => {
+                websocket.current.send(JSON.stringify({
+                    translation,
+                    language
+                }));
+            };
+
             websocket.current.onmessage = (event) => {
                 try {
                     const results = JSON.parse(event.data);
                     if (Array.isArray(results)) {
                         setVerses(prev => {
-                            const existingRefs = new Set(prev.map(v => v.reference.toLowerCase()));
                             const newVerses = results.filter(r => 
                                 r.type === 'verse' && 
                                 r.text && 
-                                !existingRefs.has(r.reference.toLowerCase())
+                                !prev.some(v => v.reference === r.reference)
                             );
                             return [...prev, ...newVerses];
                         });
@@ -68,18 +95,17 @@ const AudioRecorder = () => {
             processor.current.connect(audioContext.current.destination);
 
             processor.current.onaudioprocess = (event) => {
-                if (!websocket.current || websocket.current.readyState !== WebSocket.OPEN) return;
-                const pcmData = convertAudioBufferTo16BitPCM(event.inputBuffer);
-                websocket.current.send(pcmData);
+                if (websocket.current?.readyState === WebSocket.OPEN) {
+                    const pcmData = convertAudioBufferTo16BitPCM(event.inputBuffer);
+                    websocket.current.send(pcmData);
+                }
             };
 
             setIsRecording(true);
-            setLoading(false);
-
         } catch (error) {
             console.error('Recording error:', error);
-            setLoading(false);
         }
+        setLoading(false);
     };
 
     const stopRecording = async () => {
@@ -92,7 +118,7 @@ const AudioRecorder = () => {
         if (stream.current) {
             stream.current.getTracks().forEach(track => track.stop());
         }
-        if (websocket.current?.readyState === WebSocket.OPEN) {
+        if (websocket.current) {
             websocket.current.close();
         }
         if (audioContext.current) {
@@ -102,16 +128,60 @@ const AudioRecorder = () => {
         setLoading(false);
     };
 
-    useEffect(() => () => stopRecording(), []);
+    useEffect(() => {
+        return () => {
+            if (isRecording) stopRecording();
+        };
+    }, []);
+
+    useEffect(() => {
+        if (!isRecording) {
+            setVerses([]);
+        }
+    }, [translation, language]);
 
     return (
         <div className="min-h-screen bg-gray-100 p-4">
             <div className="max-w-4xl mx-auto bg-white rounded-lg shadow-lg p-6">
                 <h1 className="text-2xl font-bold text-gray-800 mb-6 text-center">
-                    Scripture Finder
+                    Bible Reference Finder
                 </h1>
 
                 <div className="sticky top-4 bg-white z-10 pb-4">
+                    <div className="grid grid-cols-2 gap-4 mb-4">
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">
+                                Bible Translation
+                            </label>
+                            <select
+                                value={translation}
+                                onChange={(e) => setTranslation(e.target.value)}
+                                className="w-full p-2 border rounded-md bg-white text-gray-900"
+                                disabled={isRecording}
+                            >
+                                {SUPPORTED_TRANSLATIONS.map(({ value, label }) => (
+                                    <option key={value} value={value}>{label}</option>
+                                ))}
+                            </select>
+                        </div>
+                        
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">
+                                Spoken Language
+                            </label>
+                            <select
+                                value={language}
+                                onChange={(e) => setLanguage(e.target.value)}
+                                className="w-full p-2 border rounded-md bg-white text-gray-900"
+                                disabled={isRecording}
+                            >
+                                {SUPPORTED_LANGUAGES.map(({ value, label }) => (
+                                    <option key={value} value={value}>{label}</option>
+                                ))}
+                            </select>
+                        </div>
+                    </div>
+
                     <button
                         onClick={isRecording ? stopRecording : startRecording}
                         className={`w-full py-3 px-6 rounded-lg font-medium flex items-center justify-center transition-colors ${
@@ -133,21 +203,18 @@ const AudioRecorder = () => {
                             </>
                         )}
                     </button>
-
-                    {loading && !isRecording && (
-                        <div className="mt-4 text-center text-gray-500">
-                            Initializing audio...
-                        </div>
-                    )}
                 </div>
 
                 <div className="mt-4 space-y-4 max-h-[70vh] overflow-y-auto">
                     {verses.map((verse, index) => (
                         <div key={`${verse.reference}-${index}`} className="bg-gray-50 p-4 rounded-lg">
-                            <div className="flex items-baseline gap-2 mb-2">
+                            <div className="flex items-baseline gap-2 mb-2 flex-wrap">
                                 <p className="font-semibold text-blue-600">
                                     {verse.reference}
                                 </p>
+                                <span className="text-sm bg-yellow-100 text-yellow-800 px-2 py-1 rounded">
+                                    {verse.translation.toUpperCase()}
+                                </span>
                                 <span className={`text-sm px-2 py-1 rounded ${
                                     verse.source === 'direct' 
                                         ? 'bg-green-100 text-green-800'
